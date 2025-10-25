@@ -1,8 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 from twilio.rest import Client
-import json
 import os
+import psycopg2
+from urllib.parse import urlparse
 
 # Credentials
 USERNAME = os.environ.get('FCPS_USERNAME', 'YOUR_USERNAME')
@@ -14,11 +15,92 @@ TWILIO_TOKEN = os.environ.get('TWILIO_TOKEN', 'YOUR_AUTH_TOKEN')
 TWILIO_FROM = 'whatsapp:+14155238886'
 TWILIO_TO = os.environ.get('TWILIO_TO', 'whatsapp:+17034537430')
 
+# Database
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
 # URLs
 LOGIN_URL = 'https://sisstudent.fcps.edu/SVUE/PXP2_Login_Student_OVR.aspx?regenerateSessionId=true'
 GRADEBOOK_URL = 'https://sisstudent.fcps.edu/SVUE/PXP2_Gradebook.aspx'
 
-GRADES_FILE = 'previous_grades.json'
+def get_db_connection():
+    """Connect to PostgreSQL database"""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL not set")
+    
+    # Parse the DATABASE_URL
+    result = urlparse(DATABASE_URL)
+    conn = psycopg2.connect(
+        database=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port
+    )
+    return conn
+
+def init_db():
+    """Create grades table if it doesn't exist"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS grades (
+            id SERIAL PRIMARY KEY,
+            class_index INTEGER NOT NULL,
+            grade VARCHAR(20) NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def load_previous_grades():
+    """Load previous grades from database"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get the most recent grades for each class
+        cursor.execute('''
+            SELECT DISTINCT ON (class_index) class_index, grade
+            FROM grades
+            ORDER BY class_index, updated_at DESC
+        ''')
+        
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not results:
+            return None
+        
+        # Convert to list, sorted by class_index
+        grades = [grade for _, grade in sorted(results)]
+        return grades
+        
+    except Exception as e:
+        print(f"Error loading grades: {e}")
+        return None
+
+def save_grades(grades):
+    """Save current grades to database"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Insert new grades
+        for i, grade in enumerate(grades):
+            cursor.execute(
+                'INSERT INTO grades (class_index, grade) VALUES (%s, %s)',
+                (i, grade)
+            )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        print(f"Error saving grades: {e}")
 
 def login_and_get_grades():
     """Login and fetch current grades"""
@@ -53,18 +135,6 @@ def login_and_get_grades():
     
     return grades
 
-def load_previous_grades():
-    """Load previous grades from file"""
-    if os.path.exists(GRADES_FILE):
-        with open(GRADES_FILE, 'r') as f:
-            return json.load(f)
-    return None
-
-def save_grades(grades):
-    """Save current grades to file"""
-    with open(GRADES_FILE, 'w') as f:
-        json.dump(grades, f)
-
 def send_whatsapp(message_text):
     """Send WhatsApp notification via Twilio"""
     try:
@@ -79,6 +149,9 @@ def send_whatsapp(message_text):
         print(f"❌ Failed to send WhatsApp: {e}")
 
 def main():
+    print("Initializing database...")
+    init_db()
+    
     print("Checking grades...")
     
     # Get current grades
