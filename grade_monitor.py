@@ -2,7 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 from twilio.rest import Client
 import os
-import psycopg2
+import psycopg
 from urllib.parse import urlparse
 
 # Credentials
@@ -27,15 +27,8 @@ def get_db_connection():
     if not DATABASE_URL:
         raise Exception("DATABASE_URL not set")
     
-    # Parse the DATABASE_URL
-    result = urlparse(DATABASE_URL)
-    conn = psycopg2.connect(
-        database=result.path[1:],
-        user=result.username,
-        password=result.password,
-        host=result.hostname,
-        port=result.port
-    )
+    # psycopg3 can use the URL directly
+    conn = psycopg.connect(DATABASE_URL)
     return conn
 
 def init_db():
